@@ -20,7 +20,7 @@ import math
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+MONGO_URI = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "5555")
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
 
