@@ -1,18 +1,30 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+"""
+Kremenchuk Taxi API and Telegram Bot Webhook
+"""
+import asyncio
 import os
 import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+import json
 import uuid
+import random
+import math
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 import hashlib
-import random
-import math
+from pathlib import Path
+from typing import List, Optional
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, Field, ConfigDict
+
+# --- Aiogram Imports ---
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command, CommandStart
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.exceptions import TelegramAPIError
 
 # -------------------------
 # Environment & constants
@@ -24,22 +36,37 @@ MONGO_URI = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "5555")
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
 
+# --- Telegram Bot Configuration ---
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+# RAILWAY_STATIC_URL використовується для Webhook URL
+WEBHOOK_BASE_URL = os.getenv("RAILWAY_STATIC_URL", "https://caring-reflection-production.up.railway.app") 
+WEB_APP_URL = os.environ.get('WEB_APP_URL', 'https://taxi-miniapp.preview.emergentagent.com')
+
+# Webhook URL повинен містити токен для безпеки (рекомендовано)
+WEBHOOK_PATH = f"/telegram-webhook/{BOT_TOKEN}"
+WEBHOOK_URL = WEBHOOK_BASE_URL + WEBHOOK_PATH
+
+if not BOT_TOKEN:
+    print("WARNING: BOT_TOKEN not found. Telegram Webhook will not be functional.")
+
 # -------------------------
 # Database
 # -------------------------
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["project"]
 
-# Optional: ensure indexes (id unique)
-# Note: creating indexes is async; leaving as comment for future improvement.
-# await db.users.create_index("id", unique=True)
-# await db.users.create_index("telegram_id", unique=True)
-
 # -------------------------
 # FastAPI app & router
 # -------------------------
-app = FastAPI(title="Kremenchuk Taxi API")
+app = FastAPI(title="Kremenchuk Taxi API & Bot Webhook")
 api_router = APIRouter(prefix="/api")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Single CORS middleware configuration
 app.add_middleware(
@@ -51,8 +78,21 @@ app.add_middleware(
 )
 
 # -------------------------
-# Helpers
+# Aiogram Initialization
 # -------------------------
+if BOT_TOKEN:
+    bot = Bot(token=BOT_TOKEN)
+    dp = Dispatcher()
+else:
+    # Заглушка, якщо токена немає, щоб код не падав
+    bot = None
+    dp = None
+
+# -------------------------
+# Helpers
+# (Код функцій calculate_price, calculate_distance, calculate_ride_duration, now_utc, hash_password залишається без змін)
+# -------------------------
+
 def hash_password(password: str) -> str:
     """Simple SHA256 hashing. Replace with bcrypt for production."""
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
@@ -80,7 +120,7 @@ def now_utc():
     return datetime.now(timezone.utc)
 
 # -------------------------
-# Enums & models
+# Enums & models (Без змін)
 # -------------------------
 class TariffType(str, Enum):
     ECONOMY = "economy"
@@ -215,7 +255,7 @@ class AvailabilityResponse(BaseModel):
     message: str
 
 # -------------------------
-# Pricing
+# Pricing (Без змін)
 # -------------------------
 TARIFF_PRICES = {
     TariffType.ECONOMY: 45,
@@ -230,7 +270,7 @@ PRICE_PER_KM = {
 }
 
 # -------------------------
-# Surge & helpers using DB
+# Surge & helpers using DB (Без змін)
 # -------------------------
 async def get_surge_multiplier():
     active_drivers = await db.drivers.count_documents({"is_active": True})
@@ -249,7 +289,105 @@ async def get_surge_multiplier():
     return surge, active_drivers, pending_rides
 
 # -------------------------
-# User endpoints
+# Telegram Bot Handlers (Інтегрована логіка з bot.py)
+# -------------------------
+
+def get_main_keyboard():
+    """Create main keyboard with Web App button only"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="\U0001F695 Відкрити застосунок",
+            web_app=WebAppInfo(url=WEB_APP_URL)
+        )]
+    ])
+    return keyboard
+
+if dp:
+    @dp.message(CommandStart())
+    async def cmd_start(message: types.Message):
+        """Handle /start command"""
+        user_name = message.from_user.first_name or "Користувач"
+        
+        welcome_text = f"""
+\U0001F44B Вітаємо, {user_name}!
+
+\U0001F695 **Кременчук Таксі** — ваш надійний сервіс для замовлення поїздок прямо в Telegram!
+
+\u2705 Швидке замовлення
+\u2705 Прозорі ціни
+\u2705 Надійні водії
+\u2705 Працюємо по Кременчуку
+
+Натисніть кнопку нижче, щоб відкрити застосунок:
+"""
+        
+        await message.answer(
+            welcome_text,
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
+        )
+
+    @dp.message(Command("help"))
+    async def cmd_help(message: types.Message):
+        """Handle /help command"""
+        help_text = """
+\U0001F4D6 **Довідка**
+
+**Як замовити таксі:**
+1. Натисніть кнопку "\U0001F695 Відкрити застосунок"
+2. Дозвольте доступ до геолокації
+3. Оберіть точку відправлення та призначення
+4. Виберіть тариф
+5. Підтвердьте замовлення
+
+**Тарифи:**
+\U0001F697 Економ — від 45₴
+\U0001F699 Комфорт — від 65₴
+\U0001F698 Бізнес — від 95₴
+
+**Команди:**
+/start — Головне меню
+/help — Ця довідка
+/contact — Контакти
+
+\U0001F4DE Підтримка: @kremenchuk_taxi_support
+"""
+        await message.answer(help_text, parse_mode="Markdown")
+
+    @dp.message(Command("contact"))
+    async def cmd_contact(message: types.Message):
+        """Handle /contact command"""
+        contact_text = """
+\U0001F4DE **Контакти**
+
+\U0001F3E2 Кременчук Таксі
+\U0001F4CD м. Кременчук, Полтавська область
+
+\U0001F4F1 Телефон: +380 XX XXX XX XX
+\U0001F4E7 Email: info@kremenchuk-taxi.ua
+
+\u23F0 Працюємо: 24/7
+
+\U0001F4AC Telegram: @kremenchuk_taxi_support
+"""
+        await message.answer(contact_text, parse_mode="Markdown")
+
+    @dp.message(F.web_app_data)
+    async def handle_web_app_data(message: types.Message):
+        """Handle data from Web App"""
+        data = message.web_app_data.data
+        logger.info(f"Received web app data: {data}")
+        
+        # NOTE: Тут ви можете додати логіку для обробки даних реєстрації/замовлення, 
+        # які надсилає ваш Mini App (через fetch до API або пряму обробку).
+        
+        await message.answer(
+            "\u2705 Дякуємо за використання Кременчук Таксі!",
+            reply_markup=get_main_keyboard()
+        )
+
+# -------------------------
+# User endpoints (Без змін)
 # -------------------------
 @api_router.post("/users/register", response_model=User)
 async def register_user(user_data: UserCreate):
@@ -260,7 +398,6 @@ async def register_user(user_data: UserCreate):
         raise HTTPException(status_code=400, detail="Phone must start with +380")
     user = User(**user_data.model_dump(), role=UserRole.PASSENGER)
     doc = user.model_dump()
-    # store datetime objects directly (Mongo can store datetimes)
     await db.users.insert_one(doc)
     return user
 
@@ -269,7 +406,6 @@ async def login_user(login_data: UserLogin):
     user = await db.users.find_one({"telegram_id": login_data.telegram_id}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    # Ensure created_at is datetime object
     if isinstance(user.get("created_at"), str):
         user["created_at"] = datetime.fromisoformat(user["created_at"])
     return User(**user)
@@ -317,9 +453,8 @@ async def update_user(user_id: str, user_data: UserUpdate):
 async def check_user_exists(telegram_id: str):
     user = await db.users.find_one({"telegram_id": telegram_id})
     return {"exists": user is not None, "is_admin": user.get('role') == UserRole.ADMIN.value if user else False}
-
 # -------------------------
-# Driver endpoints
+# Driver endpoints (Без змін)
 # -------------------------
 @api_router.post("/drivers", response_model=Driver)
 async def create_driver(driver_data: DriverCreate):
@@ -332,7 +467,6 @@ async def create_driver(driver_data: DriverCreate):
 async def get_drivers(active_only: bool = Query(False)):
     query = {"is_active": True} if active_only else {}
     drivers = await db.drivers.find(query, {"_id": 0}).to_list(100)
-    # convert possible string datetimes
     for d in drivers:
         if isinstance(d.get('created_at'), str):
             d['created_at'] = datetime.fromisoformat(d['created_at'])
@@ -371,7 +505,7 @@ async def toggle_driver_status(driver_id: str):
     return {"status": "toggled", "is_active": new_status}
 
 # -------------------------
-# Availability
+# Availability (Без змін)
 # -------------------------
 @api_router.get("/availability", response_model=AvailabilityResponse)
 async def check_availability():
@@ -405,7 +539,7 @@ async def check_availability():
     )
 
 # -------------------------
-# Rides
+# Rides (Без змін)
 # -------------------------
 @api_router.post("/rides", response_model=Ride)
 async def create_ride(ride_data: RideCreate):
@@ -476,7 +610,7 @@ async def cancel_ride(ride_id: str):
     return {"status": "cancelled"}
 
 # -------------------------
-# Reviews
+# Reviews (Без змін)
 # -------------------------
 @api_router.post("/reviews", response_model=Review)
 async def create_review(review_data: ReviewCreate):
@@ -503,7 +637,7 @@ async def respond_to_review(review_id: str, response: str = Query(...)):
     return {"status": "responded"}
 
 # -------------------------
-# Admin stats
+# Admin stats (Без змін)
 # -------------------------
 @api_router.get("/admin/stats", response_model=AdminStats)
 async def get_admin_stats():
@@ -531,7 +665,7 @@ async def get_admin_stats():
     )
 
 # -------------------------
-# Price calc & root
+# Price calc & root (Без змін)
 # -------------------------
 @api_router.post("/calculate-price")
 async def calculate_ride_price(
@@ -562,13 +696,52 @@ async def root():
 # include router
 app.include_router(api_router)
 
-# logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# -------------------------
+# Aiogram Webhook Endpoint
+# -------------------------
+if BOT_TOKEN:
+    @app.post(WEBHOOK_PATH)
+    async def bot_webhook(update: dict):
+        """Endpoint to receive updates from Telegram"""
+        try:
+            # Обробка оновлення
+            telegram_update = types.Update.model_validate(update)
+            await dp.feed_update(bot, telegram_update)
+            return {"ok": True}
+        except TelegramAPIError as e:
+            logger.error(f"Telegram API Error during webhook processing: {e}")
+            raise HTTPException(status_code=500, detail="Telegram API Error")
+        except Exception as e:
+            logger.error(f"Error processing webhook: {e}")
+            # Повертаємо 200 OK, щоб Telegram не намагався повторити запит
+            return {"ok": True, "error": str(e)}
 
-@app.on_event("shutdown")
+
+# -------------------------
+# Startup/Shutdown Events
+# -------------------------
 async def shutdown_db_client():
     client.close()
+
+@app.on_event("startup")
+async def on_startup():
+    """Set the Telegram webhook URL on startup"""
+    if BOT_TOKEN:
+        logger.info("Setting up Telegram Webhook...")
+        try:
+            # Встановлюємо Webhook на наш публічний URL
+            await bot.set_webhook(url=WEBHOOK_URL)
+            # Примусове видалення старих оновлень
+            await bot.delete_webhook(drop_pending_updates=True) 
+            logger.info(f"Webhook set to: {WEBHOOK_URL}")
+        except TelegramAPIError as e:
+            logger.error(f"Failed to set Webhook. Check BOT_TOKEN and URL: {e}")
+    
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Closing DB connection and deleting Webhook"""
+    await shutdown_db_client()
+    if BOT_TOKEN:
+        # Видаляємо Webhook при завершенні роботи для чистоти
+        await bot.delete_webhook() 
+        logger.info("Telegram Webhook deleted.")
