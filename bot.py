@@ -77,7 +77,7 @@ async def cmd_help(message: types.Message):
 2. Дозвольте доступ до геолокації
 3. Оберіть точку відправлення та призначення
 4. Виберіть тариф
-5. Підтвердіть замовлення
+5. Підтвердьте замовлення
 
 **Тарифи:**
 \U0001F697 Економ — від 45₴
@@ -130,8 +130,10 @@ async def main():
     logger.info("Starting Kremenchuk Taxi Bot...")
     logger.info(f"Web App URL: {WEB_APP_URL}")
     
-    # Delete webhook if exists
-    await bot.delete_webhook(drop_pending_updates=True)
+    # --- ВНЕСЕНА ЗМІНА: ПРИМУСОВЕ ВИДАЛЕННЯ WEBHOOK ---
+    logger.info("Forcing delete webhook...")
+    await bot.delete_webhook(drop_pending_updates=True) 
+    # --------------------------------------------------
     
     # Start polling
     await dp.start_polling(bot)
